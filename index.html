@@ -15,7 +15,7 @@
 <body class="bg-slate-50 text-slate-900">
   <header class="max-w-5xl mx-auto p-6">
     <h1 class="text-3xl font-semibold">Cloud 9 Artist Finder</h1>
-    <p class="text-sm text-slate-600 mt-1">Artist‑focused search across events & years — live from your Google Sheet.</p>
+    <p class="text-sm text-slate-600 mt-1">Artist-focused search across events & years — live from your Google Sheet.</p>
   </header>
 
   <main class="max-w-5xl mx-auto px-6 pb-16">
@@ -27,7 +27,6 @@
       </div>
       <div class="md:col-span-3 flex gap-2 justify-end">
         <button id="resetBtn" class="rounded-xl px-4 py-2 bg-slate-200 hover:bg-slate-300">Clear</button>
-        <a id="shareBtn" class="rounded-xl px-4 py-2 bg-blue-600 text-white hover:bg-blue-700" href="#">Share search</a>
         <a id="openSheet" target="_blank" class="rounded-xl px-4 py-2 bg-slate-900 text-white hover:bg-black">Open Sheet</a>
       </div>
     </section>
@@ -44,7 +43,8 @@
   <script>
     /*** CONFIG ***/
     const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTEDQWPOZAmYdi7gul8fgLDKsTC3uWwXNAvIUuej0aVcXyvwu6T2GJu3IAmWUrSS2zMbaVkNzScwMIi/pub?gid=1307589284&single=true&output=csv";
-    const SHEET_URL = "https://docs.google.com/spreadsheets/d/2PACX-1vTEDQWPOZAmYdi7gul8fgLDKsTC3uWwXNAvIUuej0aVcXyvwu6T2GJu3IAmWUrSS2zMbaVkNzScwMIi/edit";
+    // Use the same link for Open Sheet unless you share an editor URL later
+    const SHEET_URL = CSV_URL;
 
     const COLS = { artist: 'Artist Name', events: 'Event(s)', years: 'Year(s) Performed' };
 
@@ -67,7 +67,6 @@
     const norm = s => (s||'').toString().toLowerCase();
     const strip = s => (s||'').toString().trim();
     const extractYears = s => ((s||'').match(/\b(19\d{2}|20\d{2})\b/g)||[]).map(x=>+x);
-    const hi = (text, q)=>{ if(!q) return text; try{const re=new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`,'ig'); return text.replace(re,'<mark>$1</mark>');}catch{ return text; }}
 
     function groupByArtist(rows, idx){
       const map = new Map();
@@ -88,29 +87,32 @@
       IDX = { artist: find(COLS.artist), events: find(COLS.events), years: find(COLS.years) };
       ALL_ROWS = rows.slice(1).filter(r=> strip(r[IDX.artist]) !== '');
 
+      // sort by artist for nicer default view
+      ALL_ROWS.sort((a,b)=> strip(a[IDX.artist]).localeCompare(strip(b[IDX.artist])) );
+
       FUSE = new Fuse(ALL_ROWS.map((r,i)=>({ i, artist: r[IDX.artist]||'' })), { includeScore:true, threshold:0.3, keys:['artist'] });
 
-      const params = new URLSearchParams(location.search);
-      const startQ = params.get('q')||''; $("q").value = startQ; search();
+      // Initial render shows ALL artists
+      render(groupByArtist(ALL_ROWS, IDX));
     }
 
-    function render(groups, idx, query){
+    function render(groups){
       resultsEl.innerHTML=''; let total=0;
       groups.forEach((rows, artist)=>{
         const blocks = rows.map(r=>{
-          const ev = strip(r[idx.events]||'');
-          const yrs = strip(r[idx.years]||'');
+          const ev = strip(r[IDX.events]||'');
+          const yrs = strip(r[IDX.years]||'');
           return `${ev}\n${yrs}`;
         }).join('\n\n');
         total += rows.length;
-        const yrsAll = Array.from(new Set(rows.flatMap(r=>extractYears(r[idx.years])))).sort((a,b)=>a-b);
+        const yrsAll = Array.from(new Set(rows.flatMap(r=>extractYears(r[IDX.years])))).sort((a,b)=>a-b);
         const span = yrsAll.length? `${yrsAll[0]}–${yrsAll[yrsAll.length-1]}`: '';
         const card = document.createElement('div');
         card.className = 'rounded-2xl bg-white border border-slate-200 p-4 shadow-sm hover:shadow-md transition';
         card.innerHTML = `
           <div class="flex items-start justify-between gap-4">
             <div>
-              <h3 class="text-lg font-semibold">${hi(artist, strip(query))}</h3>
+              <h3 class="text-lg font-semibold">${artist}</h3>
               ${span?`<div class="text-xs text-slate-500 mt-1">Years span: ${span}</div>`:''}
             </div>
           </div>
@@ -123,25 +125,22 @@
 
     function search(){
       const q = $("q").value.trim();
+      if(!q){ render(groupByArtist(ALL_ROWS, IDX)); return; }
       const qn = norm(q);
-      if(!q){ render(new Map(), IDX, ''); history.replaceState({},'',location.pathname); return; }
 
+      // substring match on artist, with fuzzy fallback to enrich results
       const matches = new Set();
       ALL_ROWS.forEach((r,i)=>{ if(norm(r[IDX.artist]).includes(qn)) matches.add(i); });
       if(matches.size===0){ FUSE.search(q).slice(0,50).forEach(h=>matches.add(h.item.i)); }
 
       const rows = Array.from(matches).map(i=>ALL_ROWS[i]);
-      const groups = groupByArtist(rows, IDX);
-      render(groups, IDX, q);
-
-      const url = new URL(location.href); url.searchParams.set('q', q); history.replaceState({},'',url);
-      $("shareBtn").href = url.toString();
+      render(groupByArtist(rows, IDX));
     }
 
     let t=null; $("q").addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(search,150); });
     $("resetBtn").addEventListener('click', ()=>{ $("q").value=''; search(); });
 
-    load().catch(err=>{ resultsEl.innerHTML = `<div class="text-red-600">Error: ${err.message}</div>`; });
+    load().catch(err=>{ resultsEl.innerHTML = `<div class=\"text-red-600\">Error: ${err.message}</div>`; });
   </script>
 </body>
 </html>
