@@ -4,9 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cloud 9 Artist Finder</title>
-  <!-- Tailwind (CDN) -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Fuse.js for fuzzy search -->
   <script src="https://unpkg.com/fuse.js@6.6.2"></script>
   <style>
     .preline { white-space: pre-line; }
@@ -17,11 +15,10 @@
 <body class="bg-slate-50 text-slate-900">
   <header class="max-w-6xl mx-auto p-6">
     <h1 class="text-3xl font-semibold">Cloud 9 Artist Finder</h1>
-    <p class="text-sm text-slate-600 mt-1">Artist-focused search across events & years — live from your Google Sheet.</p>
+    <p class="text-sm text-slate-600 mt-1">Artist‑focused search across events & years — live from your Google Sheet.</p>
   </header>
 
   <main class="max-w-6xl mx-auto px-6 pb-16">
-    <!-- Controls -->
     <section class="grid gap-4 md:grid-cols-12 items-end">
       <div class="md:col-span-9">
         <label class="block text-xs font-medium text-slate-600 mb-1" for="q">Search artist name</label>
@@ -33,11 +30,10 @@
       </div>
     </section>
 
-    <!-- Stats -->
     <section id="stats" class="mt-4 text-sm text-slate-600 hidden"></section>
 
-    <!-- Full table view (default) -->
-    <section id="tableWrap" class="mt-6 tbl-wrap hidden">
+    <!-- Default full table -->
+    <section id="tableWrap" class="mt-6 tbl-wrap">
       <table class="min-w-full border border-slate-200 bg-white rounded-xl overflow-hidden">
         <thead class="bg-slate-100 text-left text-sm">
           <tr id="theadRow"></tr>
@@ -46,8 +42,8 @@
       </table>
     </section>
 
-    <!-- Grouped results view (shown while typing) -->
-    <section id="results" class="mt-6 grid gap-4"></section>
+    <!-- Grouped results while typing -->
+    <section id="results" class="mt-6 grid gap-4 hidden"></section>
   </main>
 
   <footer class="text-center text-xs text-slate-500 pb-8">Powered by Google Sheets · GitHub Pages ready</footer>
@@ -55,23 +51,25 @@
   <script>
     /*** CONFIG ***/
     const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTEDQWPOZAmYdi7gul8fgLDKsTC3uWwXNAvIUuej0aVcXyvwu6T2GJu3IAmWUrSS2zMbaVkNzScwMIi/pub?gid=1307589284&single=true&output=csv";
-    // Open Sheet should go to the editor link you provided:
     const SHEET_URL = "https://docs.google.com/spreadsheets/d/1CmgtUYn8xoUUpDebAyJcuf8f1oM9a2WXKrSkHrOaqFI/edit?usp=sharing";
 
-    // We will try to match these header names, but also fall back to fuzzy header detection
+    // Preferred header names (case-insensitive); we’ll auto-detect if your header row isn’t the first row
     const PREFERRED_COLS = { artist: 'Artist Name', events: 'Event(s)', years: 'Year(s) Performed' };
 
-    const $ = (id)=>document.getElementById(id);
+    /*** DOM helpers ***/
+    const $ = id => document.getElementById(id);
     const resultsEl = $("results");
     const statsEl = $("stats");
     const tableWrap = $("tableWrap");
     const theadRow = $("theadRow");
     const tbody = $("tbody");
 
+    /*** CSV + parsing ***/
     function csvToRows(text){
       const out=[], row=[]; let cur='', q=false; 
       for(let i=0;i<text.length;i++){
         const c=text[i],n=text[i+1];
+        if(c==='\uFEFF') continue; // strip BOM
         if(c==='"'){ if(q && n==='"'){cur+='"'; i++;} else {q=!q;} }
         else if(c===','&&!q){row.push(cur);cur='';}
         else if((c==='\n'||c==='\r')&&!q){ if(c==='\r'&&n==='\n'){i++;} row.push(cur); out.push(row.slice()); row.length=0; cur=''; }
@@ -80,25 +78,29 @@
       if(cur.length||row.length){row.push(cur);out.push(row);} return out;
     }
 
+    // pick the row that most looks like a header within the first 6 rows
+    function detectHeaderRow(rows){
+      const need = ['artist','event','year'];
+      let best = 0, scoreBest = -1;
+      const limit = Math.min(6, rows.length);
+      for(let r=0;r<limit;r++){
+        const lower = rows[r].map(c => (c||'').toString().toLowerCase());
+        let score = 0; lower.forEach(c => need.forEach(n=>{ if(c.includes(n)) score++; }));
+        if(score > scoreBest){ scoreBest = score; best = r; }
+      }
+      return best;
+    }
+
     const norm  = s => (s||'').toString().toLowerCase();
     const strip = s => (s||'').toString().trim();
     const extractYears = s => ((s||'').match(/\b(19\d{2}|20\d{2})\b/g)||[]).map(x=>+x);
 
-    function bestHeaderIndex(headers, candidates){
-      // Try exact, then case-insensitive, then contains
-      const want = candidates;
-      // exact match
-      let i = headers.indexOf(want.toLowerCase());
-      if(i!==-1) return i;
-      // contains any of these tokens
-      const tokens = {
-        'Artist Name': ['artist'],
-        'Event(s)': ['event'],
-        'Year(s) Performed': ['year']
-      }[candidates] || [];
-      for(let j=0;j<headers.length;j++){
-        if(tokens.some(t=> headers[j].includes(t))) return j;
-      }
+    function bestHeaderIndex(headers, wanted){
+      const target = wanted.toLowerCase();
+      let i = headers.indexOf(target); if(i!==-1) return i;
+      // try contains
+      const tokens = target.includes('artist')? ['artist'] : target.includes('event')? ['event'] : ['year'];
+      for(let j=0;j<headers.length;j++){ if(tokens.some(t => headers[j].includes(t))) return j; }
       return -1;
     }
 
@@ -108,44 +110,41 @@
       return map;
     }
 
-    let ALL_ROWS=[]; let IDX={}; let FUSE=null; let RAW_HEADERS=[];
+    /*** State ***/
+    let ALL_ROWS=[]; let IDX={}; let RAW_HEADERS=[]; let FUSE=null;
 
     async function load(){
-      if(!CSV_URL){ resultsEl.innerHTML = '<div class="text-slate-600">⚠️ No CSV_URL set.</div>'; return; }
       $("openSheet").href = SHEET_URL;
-
-      const res = await fetch(CSV_URL); const text = await res.text();
+      const res = await fetch(CSV_URL);
+      const text = await res.text();
       const rows = csvToRows(text);
       if(!rows.length){ resultsEl.innerHTML = '<div class="text-red-600">Could not load CSV.</div>'; return; }
 
-      RAW_HEADERS = rows[0].map(h=>strip(h));
+      const headerRow = detectHeaderRow(rows);
+      RAW_HEADERS = rows[headerRow].map(h=>strip(h));
       const headers = RAW_HEADERS.map(h=>h.toLowerCase());
 
-      // header index resolution with fallbacks
       const aIdx = bestHeaderIndex(headers, PREFERRED_COLS.artist);
       const eIdx = bestHeaderIndex(headers, PREFERRED_COLS.events);
       const yIdx = bestHeaderIndex(headers, PREFERRED_COLS.years);
       IDX = { artist: aIdx, events: eIdx, years: yIdx };
 
-      if(Object.values(IDX).some(v=> v===-1)){
-        resultsEl.innerHTML = '<div class="text-red-600">Header detection failed. Make sure your sheet has columns for Artist, Event(s), Year(s) Performed.</div>';
+      if(Object.values(IDX).some(v => v < 0)){
+        resultsEl.innerHTML = '<div class="text-red-600">Header detection failed. Ensure columns: Artist Name, Event(s), Year(s) Performed.</div>';
         return;
       }
 
-      ALL_ROWS = rows.slice(1).filter(r=> strip(r[IDX.artist]) !== '');
-
+      ALL_ROWS = rows.slice(headerRow+1).filter(r => strip(r[IDX.artist]) !== '');
       // sort by artist for nicer default view
       ALL_ROWS.sort((a,b)=> strip(a[IDX.artist]).localeCompare(strip(b[IDX.artist])) );
 
-      // Build fuzzy index on artist only
+      // fuzzy (artist only)
       FUSE = new Fuse(ALL_ROWS.map((r,i)=>({ i, artist: r[IDX.artist]||'' })), { includeScore:true, threshold:0.3, keys:['artist'] });
 
-      // Build full table for default view
       buildFullTable(RAW_HEADERS, ALL_ROWS);
-
-      // Default view: show whole sheet table, hide grouped results
+      // show table by default
       tableWrap.classList.remove('hidden');
-      resultsEl.innerHTML = '';
+      resultsEl.classList.add('hidden');
       statsEl.classList.add('hidden');
     }
 
@@ -202,12 +201,13 @@
       const q = $("q").value.trim();
       if(!q){
         // Show full table
+        resultsEl.classList.add('hidden');
         tableWrap.classList.remove('hidden');
-        resultsEl.innerHTML='';
         statsEl.classList.add('hidden');
         return;
       }
 
+      // substring on artist, fuzzy fallback
       const qn = norm(q);
       const matches = new Set();
       ALL_ROWS.forEach((r,i)=>{ if(norm(r[IDX.artist]).includes(qn)) matches.add(i); });
@@ -216,8 +216,8 @@
       const rows = Array.from(matches).map(i=>ALL_ROWS[i]);
       const groups = groupByArtist(rows, IDX);
 
-      // Show grouped results, hide table
       tableWrap.classList.add('hidden');
+      resultsEl.classList.remove('hidden');
       renderGrouped(groups);
     }
 
